@@ -16,6 +16,7 @@ limitations under the License.
 package downloader
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -156,6 +157,66 @@ func (c *ChartDownloader) DownloadTo(ref, version, dest string) (string, *proven
 		}
 	}
 	return destfile, ver, nil
+}
+
+type inMemoryChart struct {
+	ChartData              *bytes.Buffer
+	Version                string
+	ProvenanceVerification *provenance.Verification
+}
+
+type InMemoryChartList map[string]inMemoryChart
+
+var inMemoryCache = make(InMemoryChartList)
+
+//DownloadToInMemoryCache takes the chart reference and version and downloads it to the inMemoryCache for usage.
+//
+//The chart downloaded to the inMemoryCache can either be from the filesystem or from a URL
+func (c *ChartDownloader) DownloadToInMemoryCache(ref, version string) (string, *provenance.Verification, error) {
+	u, err := c.ResolveChartVersion(ref, version)
+	if err != nil {
+		return "", nil, err
+	}
+
+	g, err := c.Getters.ByScheme(u.Scheme)
+	if err != nil {
+		return "", nil, err
+	}
+
+	chartData, err := g.Get(u.String(), c.Options...)
+	if err != nil {
+		return "", nil, err
+	}
+
+	// If provenance is requested, verify it.
+	ver := &provenance.Verification{}
+	if c.Verify > VerifyNever {
+		provData, err := g.Get(u.String() + ".prov")
+		if err != nil {
+			if c.Verify == VerifyAlways {
+				return ref, ver, errors.Errorf("failed to fetch provenance %q", u.String()+".prov")
+			}
+			fmt.Fprintf(c.Out, "WARNING: Verification not found for %s: %s\n", ref, err)
+			return ref, ver, nil
+		}
+
+		if c.Verify != VerifyLater {
+			ver, err = verifyInMemoryChart(ref, c.Keyring, chartData, provData)
+			if err != nil {
+				// Fail always in this case, since it means the verification step
+				// failed.
+				return ref, ver, err
+			}
+		}
+	}
+
+	inMemoryCache[ref] = inMemoryChart{
+		ChartData:              chartData,
+		Version:                version,
+		ProvenanceVerification: ver,
+	}
+
+	return ref, ver, nil
 }
 
 // ResolveChartVersion resolves a chart reference to a URL.
@@ -318,6 +379,19 @@ func VerifyChart(path, keyring string) (*provenance.Verification, error) {
 	return sig.Verify(path, provfile)
 }
 
+// verifyInMemoryChart takes key to a chart in the the inMemoryCache and a keyring,
+// and verifies the chart.
+//
+// It assumes that a chart data is accompanied by a embedded provenance file whose
+// name is the archive file name plus the ".prov" extension.
+func verifyInMemoryChart(ref, keyring string, chartData, provData *bytes.Buffer) (*provenance.Verification, error) {
+	sig, err := provenance.NewFromKeyring(keyring, "")
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to load keyring")
+	}
+	return sig.VerifyFromData(ref, chartData, provData)
+}
+
 // isTar tests whether the given file is a tar file.
 //
 // Currently, this simply checks extension, since a subsequent function will
@@ -391,4 +465,8 @@ func loadRepoConfig(file string) (*repo.File, error) {
 		return nil, err
 	}
 	return r, nil
+}
+
+func GetInMemoryCache() InMemoryChartList {
+	return inMemoryCache
 }

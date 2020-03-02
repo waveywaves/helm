@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -105,15 +106,16 @@ type Install struct {
 
 // ChartPathOptions captures common options used for controlling chart paths
 type ChartPathOptions struct {
-	CaFile   string // --ca-file
-	CertFile string // --cert-file
-	KeyFile  string // --key-file
-	Keyring  string // --keyring
-	Password string // --password
-	RepoURL  string // --repo
-	Username string // --username
-	Verify   bool   // --verify
-	Version  string // --version
+	CaFile     string // --ca-file
+	CertFile   string // --cert-file
+	KeyFile    string // --key-file
+	Keyring    string // --keyring
+	Password   string // --password
+	RepoURL    string // --repo
+	Username   string // --username
+	Verify     bool   // --verify
+	Version    string // --version
+	ReadOnlyFS bool   // --use-inmemory-cache
 }
 
 // NewInstall creates a new Install object with the given configuration.
@@ -736,7 +738,6 @@ OUTER:
 func (c *ChartPathOptions) LocateChart(name string, settings *cli.EnvSettings) (string, error) {
 	name = strings.TrimSpace(name)
 	version := strings.TrimSpace(c.Version)
-
 	if _, err := os.Stat(name); err == nil {
 		abs, err := filepath.Abs(name)
 		if err != nil {
@@ -776,6 +777,13 @@ func (c *ChartPathOptions) LocateChart(name string, settings *cli.EnvSettings) (
 		name = chartURL
 	}
 
+	if c.ReadOnlyFS {
+		if settings.Debug {
+			log.Output(2, fmt.Sprintf("[debug] Downloading %s to inMemoryCache\n", name))
+		}
+		name, _, err := dl.DownloadToInMemoryCache(name, version)
+		return name, err
+	}
 	if err := os.MkdirAll(settings.RepositoryCache, 0755); err != nil {
 		return "", err
 	}

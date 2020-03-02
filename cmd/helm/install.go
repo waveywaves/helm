@@ -19,6 +19,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/pkg/errors"
@@ -151,6 +152,7 @@ func addInstallFlags(f *pflag.FlagSet, client *action.Install, valueOpts *values
 	f.BoolVar(&client.Atomic, "atomic", false, "if set, installation process purges chart on fail. The --wait flag will be set automatically if --atomic is used")
 	f.BoolVar(&client.SkipCRDs, "skip-crds", false, "if set, no CRDs will be installed. By default, CRDs are installed if not already present")
 	f.BoolVar(&client.SubNotes, "render-subchart-notes", false, "if set, render subchart notes along with the parent")
+	f.BoolVar(&client.ReadOnlyFS, "readonly-fs", false, "if set, do not download charts to the HELM_REPOSITORY_CACHE")
 	addValueOptionsFlags(f, valueOpts)
 	addChartPathOptionsFlags(f, &client.ChartPathOptions)
 }
@@ -162,13 +164,13 @@ func runInstall(args []string, client *action.Install, valueOpts *values.Options
 		client.Version = ">0.0.0-0"
 	}
 
-	name, chart, err := client.NameAndChart(args)
+	name, schart, err := client.NameAndChart(args)
 	if err != nil {
 		return nil, err
 	}
 	client.ReleaseName = name
 
-	cp, err := client.ChartPathOptions.LocateChart(chart, settings)
+	cp, err := client.ChartPathOptions.LocateChart(schart, settings)
 	if err != nil {
 		return nil, err
 	}
@@ -181,8 +183,19 @@ func runInstall(args []string, client *action.Install, valueOpts *values.Options
 		return nil, err
 	}
 
-	// Check chart dependencies to make sure all are present in /charts
-	chartRequested, err := loader.Load(cp)
+	// Check chart dependencies to make sure all are present in the inMemoryCache or in /charts
+	var chartRequested *chart.Chart
+	if client.ReadOnlyFS {
+		if _, err := os.Stat(cp); err == nil {
+			chartRequested, err = loader.Load(cp)
+		} else {
+
+			chartData := downloader.GetInMemoryCache()[schart].ChartData
+			chartRequested, err = loader.LoadArchive(chartData)
+		}
+	} else {
+		chartRequested, err = loader.Load(cp)
+	}
 	if err != nil {
 		return nil, err
 	}
